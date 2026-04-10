@@ -17,7 +17,7 @@ if os.environ.get('PHANTORA') is None:
         t = _time.perf_counter()
         return t, t
 else:
-    LIB = ctypes.CDLL('libcuda.so.1')
+    LIB = ctypes.CDLL('/phantora/dist/libcuda.so.1')
     _read_timer = LIB.read_timer
     LIB.get_time_double.restype = ctypes.c_double
     _get_time = LIB.get_time_double

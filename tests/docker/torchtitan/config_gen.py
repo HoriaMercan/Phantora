@@ -53,9 +53,9 @@ fairness = "PerFlowMaxMin"
 type = "TwoLayerMultiPath"
 
 [topology.args]
-nspines = 2
+nspines = {nspines}
 nracks = {nracks}
-rack_size = 2
+rack_size = {rack_size}
 host_bw = 400
 rack_uplink_port_bw = 400
 load_balancer_type = "EcmpEverything"
@@ -96,7 +96,14 @@ if __name__ == '__main__':
 
     with open(join(script_dir, "netconfig.toml"), "w") as f:
         host_list = str([f"host-{i}" for i in range(1, nhosts + 1)])
-        f.write(NETCONFIG_TEMPLATE.format(host_list=host_list, nracks=(nhosts + 1) // 2))
+        # For larger clusters, scale topology: more spines for better load balancing
+        # nspines = 2 for small clusters (2-4 nodes), 4 for medium (8 nodes), 8+ for larger
+        nspines = 2 if nhosts <= 4 else (4 if nhosts <= 16 else 8)
+        # rack_size: max 8 per rack (typical A100 cabinet size); keeps locality for allreduce
+        rack_size = nhosts if nhosts <= 8 else 8
+        # nracks: fit hosts into racks; e.g., 8 hosts in 8-sized rack = 1 rack, 16 hosts = 2 racks
+        nracks = (nhosts + rack_size - 1) // rack_size
+        f.write(NETCONFIG_TEMPLATE.format(host_list=host_list, nracks=nracks, nspines=nspines, rack_size=rack_size))
 
     with open(join(script_dir, "config.sh"), "w") as f:
         f.write(f"EVAL_NHOST={nhosts}\n")
