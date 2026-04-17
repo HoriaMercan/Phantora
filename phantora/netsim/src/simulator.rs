@@ -43,12 +43,14 @@ pub trait Executor<'a> {
     fn run_one_step(&mut self, until: Option<Timestamp>) -> AppEvent;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SimulatorSetting {
     #[serde(serialize_with = "serialize_bandwidth")]
     #[serde(deserialize_with = "deserialize_bandwidth")]
     pub loopback_speed: Bandwidth,
     pub fairness: FairnessModel,
+    #[serde(default)]
+    pub custom_model_path: Option<std::path::PathBuf>,
 }
 
 impl Default for SimulatorSetting {
@@ -56,6 +58,7 @@ impl Default for SimulatorSetting {
         Self {
             fairness: FairnessModel::default(),
             loopback_speed: LOOPBACK_SPEED_GBPS.gbps(),
+            custom_model_path: None,
         }
     }
 }
@@ -84,6 +87,7 @@ pub struct SimulatorBuilder {
     setting: SimulatorSetting,
     // Real world hostname to "host_{i}" (the naming convention used in `cluster::Cluster`)
     host_mapping: Option<HostMapping>,
+    pub custom_model: Option<crate::custom_model::CustomModelConfig>,
 }
 
 #[derive(Debug, Error)]
@@ -104,6 +108,7 @@ impl SimulatorBuilder {
             cluster: None,
             setting: Default::default(),
             host_mapping: None,
+            custom_model: None,
         }
     }
 
@@ -143,14 +148,25 @@ impl SimulatorBuilder {
             return Err(Error::EmptyCluster);
         }
 
+        
+        let custom_model = self.setting.custom_model_path.as_ref().map(|path| {
+            let mut file = std::fs::File::open(path).expect(&format!("fail to open custom model file {:?}", path));
+            let mut json_content = String::new();
+            use std::io::Read;
+            file.read_to_string(&mut json_content).unwrap();
+            serde_json::from_str(&json_content).expect("Failed to parse custom model JSON")
+        });
+
         Ok(Simulator {
             cluster: self.cluster.take().unwrap(),
             ts: 0,
             state: NetState::default(),
             timers: BinaryHeap::<Box<dyn Timer>>::new(),
-            setting: self.setting,
+            setting: self.setting.clone(),
             host_mapping: self.host_mapping.take(),
+            custom_model,
         })
+
     }
 }
 
@@ -163,6 +179,7 @@ pub struct Simulator {
     // setting
     setting: SimulatorSetting,
     host_mapping: Option<HostMapping>,
+    pub custom_model: Option<crate::custom_model::CustomModelConfig>,
 }
 
 macro_rules! calc_delta_on_group {
@@ -226,6 +243,7 @@ impl Simulator {
             timers: BinaryHeap::new(),
             setting: SimulatorSetting::default(),
             host_mapping: None,
+            custom_model: None,
         }
     }
 

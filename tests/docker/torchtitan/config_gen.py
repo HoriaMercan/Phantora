@@ -48,7 +48,7 @@ host_mapping = {host_list}
 [simulator]
 loopback_speed = 2880
 fairness = "PerFlowMaxMin"
-
+{custom_model_line}
 [topology]
 type = "TwoLayerMultiPath"
 
@@ -81,6 +81,7 @@ if __name__ == '__main__':
     parser.add_argument("--vram_mib", type=int, default=143771)
     parser.add_argument("--cpuset_sim", type=str, default=default_sim_core)
     parser.add_argument("--cpuset_host", type=str, default=default_host_cpuset)
+    parser.add_argument("--custom_model", type=str, default="")
     args = parser.parse_args()
 
     nhosts = args.nhost
@@ -96,14 +97,45 @@ if __name__ == '__main__':
 
     with open(join(script_dir, "netconfig.toml"), "w") as f:
         host_list = str([f"host-{i}" for i in range(1, nhosts + 1)])
-        # For larger clusters, scale topology: more spines for better load balancing
-        # nspines = 2 for small clusters (2-4 nodes), 4 for medium (8 nodes), 8+ for larger
-        nspines = 2 if nhosts <= 4 else (4 if nhosts <= 16 else 8)
-        # rack_size: max 8 per rack (typical A100 cabinet size); keeps locality for allreduce
-        rack_size = nhosts if nhosts <= 8 else 8
-        # nracks: fit hosts into racks; e.g., 8 hosts in 8-sized rack = 1 rack, 16 hosts = 2 racks
-        nracks = (nhosts + rack_size - 1) // rack_size
-        f.write(NETCONFIG_TEMPLATE.format(host_list=host_list, nracks=nracks, nspines=nspines, rack_size=rack_size))
+        custom_model_line = f'custom_model_path = "{args.custom_model}"\n' if args.custom_model else ""
+        
+        # Dynamic topology calculation for realistic cluster simulation
+        # Two strategies based on cluster size:
+        # 
+        # STRATEGY 1: Local/Lab clusters (nhosts <= 4)
+        #   - Pack nodes together: mimics single cabinet deployments
+        #   - rack_size = 8 (standard cabinet)
+        #   - nracks = 1 (everything in one rack)
+        #   - Good for: testing on limited hardware
+        #
+        # STRATEGY 2: Large/Distributed clusters (nhosts > 4)
+        #   - Spread nodes across racks: models real data center distribution
+        #   - rack_size = 1 (one node per rack, more realistic for scale)
+        #   - nracks = nhosts (each node gets its own rack/cabinet)
+        #   - Good for: simulating realistic network behavior across sites
+        
+        if nhosts <= 4:
+            # Strategy 1: Colocate in single cabinet
+            rack_size = 8
+            nracks = 1
+        else:
+            # Strategy 2: Distribute across racks
+            rack_size = 1
+            nracks = nhosts
+        
+        # Spine scaling based on cluster size and topology
+        # - Intra-rack: minimal spines needed (within cabinet)
+        # - Inter-rack: more spines needed for cross-rack bandwidth
+        if nhosts <= 4:
+            nspines = 2  # Small cluster, basic redundancy
+        elif nhosts <= 16:
+            nspines = 4  # Medium cluster, good cross-rack connectivity
+        elif nhosts <= 64:
+            nspines = 8  # Large cluster, high-capacity core
+        else:
+            nspines = max(16, nhosts // 4)  # Very large, scales with cluster
+        
+        f.write(NETCONFIG_TEMPLATE.format(host_list=host_list, nracks=nracks, nspines=nspines, rack_size=rack_size, custom_model_line=custom_model_line))
 
     with open(join(script_dir, "config.sh"), "w") as f:
         f.write(f"EVAL_NHOST={nhosts}\n")

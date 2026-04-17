@@ -155,6 +155,34 @@ impl EventQueue {
                 self.record_timeline_action(id, action);
             }
             PushEvent::Start(id, Action::Communication(mut flow, meta)) => {
+                // intercept with custom model if present
+                let mut intercepted = false;
+                let mut est_duration_ns = 0;
+                let op_and_size = match &meta {
+                    cuda_call::CudaCall::NcclAllReduce { count, dtype, .. } => Some(("ncclAllReduce", *count * dtype.size())),
+                    cuda_call::CudaCall::NcclBcast { count, dtype, .. } => Some(("ncclBroadcast", *count * dtype.size())),
+                    _ => None,
+                };
+                if let Some((op, size)) = op_and_size {
+                    if let Some(model) = self.netsim.custom_model.as_ref() {
+                        if let Some(estimated_us) = model.estimate_time(op, size) {
+                            est_duration_ns = (estimated_us * 1000.0) as i64;
+                            intercepted = true;
+                        }
+                    }
+                }
+                
+                if intercepted {
+                    let action = Action::Communication(flow.clone(), meta.clone());
+                    self.event_queue.push(Event::Start(id), prio);
+                    self.in_queue_not_started.insert(id, action.clone());
+                    self.record_timeline_action(id, action);
+                    
+                    // Directly push an End event so the custom simulator time dictates its runtime
+                    self.push_event(PushEvent::End(id), time + est_duration_ns);
+                    return;
+                }
+
                 // Add a new flow to the network simulator dynamically
                 assert!(flow.token.is_none());
                 // update the actual start time and associate it with the event_id

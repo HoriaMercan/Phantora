@@ -50,7 +50,7 @@ host_mapping = {host_list}
 [simulator]
 loopback_speed = 2880
 fairness = "PerFlowMaxMin"
-
+{custom_model_line}
 [topology]
 type = "TwoLayerMultiPath"
 
@@ -83,6 +83,7 @@ if __name__ == '__main__':
     parser.add_argument("--vram_mib", type=int, default=143771)
     parser.add_argument("--cpuset_sim", type=str, default=default_sim_core)
     parser.add_argument("--cpuset_host", type=str, default=default_host_cpuset)
+    parser.add_argument("--custom_model", type=str, default="")
     args = parser.parse_args()
 
     nhosts = args.nhost
@@ -102,7 +103,8 @@ if __name__ == '__main__':
 
     with open(join(script_dir, "netconfig.toml"), "w") as f:
         host_list = str([f"host-{i}" for i in range(1, nhosts + 1)])
-        f.write(NETCONFIG_TEMPLATE.format(host_list=host_list, nracks=(nhosts + 1) // 2))
+        custom_model_line = f'custom_model_path = "{args.custom_model}"\n' if args.custom_model else ""
+        f.write(NETCONFIG_TEMPLATE.format(host_list=host_list, nracks=(nhosts + 1) // 2, custom_model_line=custom_model_line))
 
     with open(join(script_dir, "deepspeed_env"), "w") as f:
         f.write("LD_LIBRARY_PATH=/phantora/dist:/phantora/pytorch/torch/lib:/usr/local/cuda/lib64:/usr/local/python3.11.9/lib\n")
