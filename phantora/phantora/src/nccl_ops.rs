@@ -59,9 +59,14 @@ impl NcclOps for SimpleRing {
         let n = ranks.len();
         let size = count * dtype.size();
         for i in 1..n {
-            let src = &ranks[root as usize].0.hostname;
-            let dst = &ranks[(root as usize + i) % n].0.hostname;
-            trace.push(Flow::new(size, src, dst, None));
+            let src = format!(
+                "{}#{}",
+                ranks[root as usize].0.hostname,
+                ranks[root as usize].0.pid
+            );
+            let dst_rank = (root as usize + i) % n;
+            let dst = format!("{}#{}", ranks[dst_rank].0.hostname, ranks[dst_rank].0.pid);
+            trace.push(Flow::new(size, &src, &dst, None));
         }
         trace
     }
@@ -71,9 +76,9 @@ impl NcclOps for SimpleRing {
         let n = ranks.len();
         let size = count * dtype.size() * 2 * (n - 1) / n;
         for i in 0..n {
-            let src = &ranks[i].0.hostname;
-            let dst = &ranks[(i + 1) % n].0.hostname;
-            trace.push(Flow::new(size, src, dst, None));
+            let src = format!("{}#{}", ranks[i].0.hostname, ranks[i].0.pid);
+            let dst = format!("{}#{}", ranks[(i + 1) % n].0.hostname, ranks[(i + 1) % n].0.pid);
+            trace.push(Flow::new(size, &src, &dst, None));
         }
         trace
     }
@@ -84,9 +89,9 @@ impl NcclOps for SimpleRing {
         let send_size = count * dtype.size() * n;
         let size = send_size / n * (n - 1);
         for i in 0..n {
-            let src = &ranks[i].0.hostname;
-            let dst = &ranks[(i + 1) % n].0.hostname;
-            trace.push(Flow::new(size, src, dst, None));
+            let src = format!("{}#{}", ranks[i].0.hostname, ranks[i].0.pid);
+            let dst = format!("{}#{}", ranks[(i + 1) % n].0.hostname, ranks[(i + 1) % n].0.pid);
+            trace.push(Flow::new(size, &src, &dst, None));
         }
         trace
     }
@@ -102,9 +107,9 @@ impl NcclOps for SimpleRing {
         let send_size = count * dtype.size() * n;
         let size = send_size / n * (n - 1);
         for i in 0..n {
-            let src = &ranks[i].0.hostname;
-            let dst = &ranks[(i + 1) % n].0.hostname;
-            trace.push(Flow::new(size, src, dst, None));
+            let src = format!("{}#{}", ranks[i].0.hostname, ranks[i].0.pid);
+            let dst = format!("{}#{}", ranks[(i + 1) % n].0.hostname, ranks[(i + 1) % n].0.pid);
+            trace.push(Flow::new(size, &src, &dst, None));
         }
         trace
     }

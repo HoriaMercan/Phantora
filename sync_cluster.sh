@@ -11,6 +11,7 @@ ITEMS=(
     "phantora/phantora/"
     "phantora/netsim/"
     "phantora/cuda_call/"
+    "phantora/visualizer/"
     # "stub/"
     # "include/"
     "tests/"
@@ -48,7 +49,7 @@ if [ "$DIRECTION" == "up" ]; then
     # Use rsync with --relative to maintain the directory structure
     for item in "${ITEMS[@]}"; do
         echo "-----------------------------------"
-        echo "Syncing $item..."
+        echo "Syncing $item ..."
         if [[ "$item" == run_phantora_*.sh ]]; then
             TARGET_DIR="$REMOTE_BASE_DIR"
         else

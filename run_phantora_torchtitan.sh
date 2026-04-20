@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=phantora_torchtitan
 #SBATCH --output=logs/torchtitan_%j.out
-#SBATCH --partition=dgxa100
+#SBATCH --partition=dgxh100
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:2
@@ -22,27 +22,60 @@ ulimit -s unlimited
 # --- CONFIGURATION ---
 SIF_IMAGE="/export/home/acs/stud/h/horia.mercan/licenta_build/phantora-original.sif"
 WORKSPACE_DIR="$PWD"
-EVAL_NNODES="${EVAL_NNODES:-1}"
-EVAL_NGPU="${EVAL_NGPU:-2}"
-EVAL_VRAM_MIB="${EVAL_VRAM_MIB:-81920}"
-
-# Simulation parameters - derived from SLURM by default, can be overridden
-# By default: simulate what you requested from SLURM
-# Override examples:
-#   SIM_NODES=8 SIM_GPUS_PER_NODE=8 ./run_phantora_torchtitan.sh  (simulate 64 on 2 GPUs)
-#   SIM_NODES=4 SIM_GPUS_PER_NODE=1 ./run_phantora_torchtitan.sh  (simulate 4 on 2 GPUs)
 SLURM_NNODES="${SLURM_NNODES:-1}"
 SLURM_GPUS_PER_NODE="${SLURM_GPUS_PER_NODE:-2}"
-SIM_NODES="${SIM_NODES:-8}"
-SIM_GPUS_PER_NODE="${SIM_GPUS_PER_NODE:-8}"
+
+# Runtime parameters (torchrun world size) - derive from SLURM by default
+EVAL_NNODES="${EVAL_NNODES:-$SLURM_NNODES}"
+EVAL_NGPU="${EVAL_NGPU:-$SLURM_GPUS_PER_NODE}"
+EVAL_VRAM_MIB="${EVAL_VRAM_MIB:-81920}"
+
+# Simulation topology parameters - default to runtime world size, can be overridden
+# Override examples:
+#   SIM_NODES=8 SIM_GPUS_PER_NODE=8 ./run_phantora_torchtitan.sh
+#   SIM_NODES=16 SIM_GPUS_PER_NODE=8 ./run_phantora_torchtitan.sh
+SIM_NODES="${SIM_NODES:-$EVAL_NNODES}"
+SIM_GPUS_PER_NODE="${SIM_GPUS_PER_NODE:-$EVAL_NGPU}"
 
 PHANTORA_CUSTOM_MODEL_PATH="${PHANTORA_CUSTOM_MODEL_PATH:-$WORKSPACE_DIR/custom_model_results.json}"
+PHANTORA_BW_MBPS="${PHANTORA_BW_MBPS:-3600000.0}" # ~450 GB/s one-way NVLink ~= 3,600,000 Mbps
+PHANTORA_LACKING_NODES="${PHANTORA_LACKING_NODES:-0.0}"
+PHANTORA_DEFAULT_LATENCY_US="${PHANTORA_DEFAULT_LATENCY_US:-1.0}"
+PHANTORA_CUSTOM_MODEL_TOPOLOGY="${PHANTORA_CUSTOM_MODEL_TOPOLOGY:-dragonfly}"
+
+RUNTIME_HOSTFILE="$WORKSPACE_DIR/tests/docker/torchtitan/hostfile.runtime"
+mkdir -p "$(dirname "$RUNTIME_HOSTFILE")"
+
+if [[ "$EVAL_NNODES" == "1" ]]; then
+        THIS_HOST=$(hostname)
+        printf '%s slots=%s\n' "$THIS_HOST" "$EVAL_NGPU" > "$RUNTIME_HOSTFILE"
+else
+        if [[ -z "${SLURM_NODELIST:-}" ]]; then
+                echo "ERROR: SLURM_NODELIST is empty for multi-node run."
+                exit 1
+        fi
+
+        mapfile -t SLURM_HOSTS < <(scontrol show hostnames "$SLURM_NODELIST")
+        if (( ${#SLURM_HOSTS[@]} < EVAL_NNODES )); then
+                echo "ERROR: Requested EVAL_NNODES=$EVAL_NNODES but only ${#SLURM_HOSTS[@]} host(s) in SLURM_NODELIST."
+                exit 1
+        fi
+
+        : > "$RUNTIME_HOSTFILE"
+        for ((i = 0; i < EVAL_NNODES; i++)); do
+                printf '%s slots=%s\n' "${SLURM_HOSTS[$i]}" "$EVAL_NGPU" >> "$RUNTIME_HOSTFILE"
+        done
+fi
 
 
 echo "----------------------------------------------------"
 echo "Running Phantora TorchTitan Test Job"
 echo "Image: $SIF_IMAGE"
 echo "Workspace: $WORKSPACE_DIR"
+echo "Runtime world size: ${EVAL_NNODES} nodes x ${EVAL_NGPU} gpus/node = $((EVAL_NNODES * EVAL_NGPU)) ranks"
+echo "Simulated topology: ${SIM_NODES} nodes x ${SIM_GPUS_PER_NODE} gpus/node = $((SIM_NODES * SIM_GPUS_PER_NODE)) gpus"
+echo "Custom model topology: ${PHANTORA_CUSTOM_MODEL_TOPOLOGY}"
+echo "Runtime hostfile: ${RUNTIME_HOSTFILE}"
 echo "----------------------------------------------------"
 
 # Make sure the logs directory exists
@@ -61,6 +94,12 @@ srun apptainer exec --nv \
     --pwd /mnt \
     "$SIF_IMAGE" bash -c "
                 set -euo pipefail
+
+        if [[ -d /mnt/Phantora ]]; then
+                REPO_ROOT=/mnt/Phantora
+        else
+                REPO_ROOT=/mnt
+        fi
 
         # 1. Setup paths
         export CUDA_HOME=/usr/local/cuda
@@ -128,7 +167,7 @@ srun apptainer exec --nv \
 
 
                 # 3. Build simulator binary
-        cd /mnt/Phantora/phantora
+        cd \"\$REPO_ROOT/phantora\"
         cargo build --release || { echo 'Cargo build failed'; exit 1; }
 
         # 4. Prepare args
@@ -136,24 +175,47 @@ srun apptainer exec --nv \
                 EVAL_NGPU=$EVAL_NGPU
 
                 # 5. Generate netconfig from torchtitan template files
-                cd /mnt/Phantora
+                cd \"\$REPO_ROOT\"
                 echo 'Generating netconfig.toml with config_gen.py...'
                 python3 tests/docker/torchtitan/config_gen.py \
                         --nhost $SIM_NODES \
                         --ngpu $SIM_GPUS_PER_NODE \
-                        --custom_model \"${PHANTORA_CUSTOM_MODEL_PATH:-}\"
+                        --custom_model \"${PHANTORA_CUSTOM_MODEL_PATH:-}\" \
+                        --bw_mbps $PHANTORA_BW_MBPS \
+                        --lacking_nodes $PHANTORA_LACKING_NODES \
+                        --default_latency_us $PHANTORA_DEFAULT_LATENCY_US \
+                        --custom_model_topology $PHANTORA_CUSTOM_MODEL_TOPOLOGY
 
-                NETCONFIG_FILE=/mnt/Phantora/tests/docker/torchtitan/netconfig.toml
+                        NETCONFIG_FILE=\"\$REPO_ROOT/tests/docker/torchtitan/netconfig.toml\"
 
-                # For single-node SLURM/apptainer runs, map all simulated hosts to runtime hostname
-                if [[ \"\$EVAL_NNODES\" == \"1\" ]]; then
-                        THIS_HOST=\$(hostname)
-                        # Replace all host-N entries with the real hostname
-                        sed -i \"s/host-[0-9]\\+/\$THIS_HOST/g\" \"\$NETCONFIG_FILE\"
+                # Replace logical host-i entries in netconfig with runtime hostnames.
+                # If SIM_NODES > runtime hosts, distribute simulated hosts round-robin.
+                if [[ -f /mnt/tests/docker/torchtitan/hostfile.runtime ]]; then
+                        HOSTFILE=/mnt/tests/docker/torchtitan/hostfile.runtime
+                elif [[ -f \"\$REPO_ROOT/tests/docker/torchtitan/hostfile.runtime\" ]]; then
+                        HOSTFILE=\"\$REPO_ROOT/tests/docker/torchtitan/hostfile.runtime\"
+                else
+                        echo \"ERROR: hostfile.runtime not found in expected locations:\"
+                        echo \"  - /mnt/tests/docker/torchtitan/hostfile.runtime\"
+                        echo \"  - \$REPO_ROOT/tests/docker/torchtitan/hostfile.runtime\"
+                        echo \"Current /mnt contents:\" && ls -la /mnt || true
+                        echo \"Current \$REPO_ROOT/tests/docker/torchtitan contents:\" && ls -la \"\$REPO_ROOT/tests/docker/torchtitan\" || true
+                        exit 1
                 fi
+                mapfile -t RUNTIME_HOSTS < <(awk '{print \$1}' \"\$HOSTFILE\")
+                if [[ \"\${#RUNTIME_HOSTS[@]}\" -eq 0 ]]; then
+                        echo \"ERROR: runtime hostfile has no hosts: \$HOSTFILE\"
+                        exit 1
+                fi
+
+                for ((i = 1; i <= SIM_NODES; i++)); do
+                        host_index=\$(((i - 1) % \${#RUNTIME_HOSTS[@]}))
+                        runtime_host=\${RUNTIME_HOSTS[\$host_index]}
+                        sed -i \"s/host-\$i/\$runtime_host/g\" \"\$NETCONFIG_FILE\"
+                done
         
                 # 6. Start Simulator
-                cd /mnt/Phantora/phantora
+                cd \"\$REPO_ROOT/phantora\"
         echo 'Building computational graph...'
         python3 build_graph.py
 
@@ -180,7 +242,7 @@ srun apptainer exec --nv \
         
                 # 7. Run TorchTitan
         echo 'Starting TorchTitan training simulation...'
-        cd /mnt/Phantora
+        cd \"\$REPO_ROOT\"
 
         # FORCE Python to use the library that WE KNOW has the symbol
         # We point LD_PRELOAD to the one inside the container (/phantora/...)

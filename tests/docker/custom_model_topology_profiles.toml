@@ -1,0 +1,8 @@
+[topologies.dragonfly]
+custom_model_topology = "dragonfly"
+
+[topologies.fattree]
+custom_model_topology = "fattree"
+
+[topologies.torus]
+custom_model_topology = "torus"

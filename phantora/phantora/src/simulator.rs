@@ -1054,13 +1054,14 @@ impl Simulator {
 
                         if waiting.waiting_for.is_empty() {
                             if let Some(waiting) = waitings.remove(idx) {
+                                let nranks = waiting.joined_ranks.len(); // use the true nranks of the group
                                 let comm_events: Vec<_> = waiting
                                     .trace
                                     .into_iter()
                                     .map(|flow| {
                                         queue.add_action_or_point(
                                             vec![Some(waiting.comm_start_meta)],
-                                            Some(Action::Communication(flow, call.clone())),
+                                            Some(Action::Communication(flow, call.clone(), nranks)),
                                             curr_time,
                                         )
                                     })

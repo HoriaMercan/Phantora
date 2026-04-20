@@ -51,6 +51,14 @@ pub struct SimulatorSetting {
     pub fairness: FairnessModel,
     #[serde(default)]
     pub custom_model_path: Option<std::path::PathBuf>,
+    #[serde(default)]
+    pub custom_model_topology: Option<String>,
+    #[serde(default)]
+    pub bw_mbps: Option<f64>,
+    #[serde(default)]
+    pub lacking_nodes: Option<f64>,
+    #[serde(default)]
+    pub default_latency_us: Option<f64>,
 }
 
 impl Default for SimulatorSetting {
@@ -59,6 +67,10 @@ impl Default for SimulatorSetting {
             fairness: FairnessModel::default(),
             loopback_speed: LOOPBACK_SPEED_GBPS.gbps(),
             custom_model_path: None,
+            custom_model_topology: None,
+            bw_mbps: None,
+            lacking_nodes: None,
+            default_latency_us: None,
         }
     }
 }
@@ -79,7 +91,56 @@ where
     Ok(f.gbps())
 }
 
-type HostMapping = FnvHashMap<String, String>;
+#[derive(Debug, Clone, Default)]
+struct HostMapping {
+    by_hostname: FnvHashMap<String, Vec<String>>,
+    by_endpoint: FnvHashMap<String, String>,
+}
+
+impl HostMapping {
+    fn from_host_list(hosts: Vec<String>) -> Self {
+        let mut by_hostname: FnvHashMap<String, Vec<String>> = FnvHashMap::default();
+        for (i, host) in hosts.into_iter().enumerate() {
+            by_hostname
+                .entry(host)
+                .or_default()
+                .push(format!("host_{}", i));
+        }
+
+        Self {
+            by_hostname,
+            by_endpoint: FnvHashMap::default(),
+        }
+    }
+
+    fn map_endpoint(&mut self, endpoint: &str) -> Option<String> {
+        if let Some(mapped) = self.by_endpoint.get(endpoint) {
+            return Some(mapped.clone());
+        }
+
+        let hostname = endpoint
+            .split_once('#')
+            .map(|(name, _)| name)
+            .unwrap_or(endpoint);
+
+        let mapped = {
+            let candidates = self.by_hostname.get(hostname)?;
+            if candidates.len() == 1 {
+                candidates[0].clone()
+            } else {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                use std::hash::{Hash, Hasher};
+                endpoint.hash(&mut hasher);
+                let index = (hasher.finish() as usize) % candidates.len();
+                candidates[index].clone()
+            }
+        };
+
+        self.by_endpoint
+            .insert(endpoint.to_string(), mapped.clone());
+        Some(mapped)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SimulatorBuilder {
@@ -118,13 +179,7 @@ impl SimulatorBuilder {
     }
 
     pub fn host_mapping(&mut self, host_mapping: Vec<String>) -> &mut Self {
-        self.host_mapping = Some(
-            host_mapping
-                .into_iter()
-                .enumerate()
-                .map(|(i, h)| (h, format!("host_{}", i)))
-                .collect(),
-        );
+        self.host_mapping = Some(HostMapping::from_host_list(host_mapping));
         self
     }
 
@@ -149,12 +204,17 @@ impl SimulatorBuilder {
         }
 
         
-        let custom_model = self.setting.custom_model_path.as_ref().map(|path| {
-            let mut file = std::fs::File::open(path).expect(&format!("fail to open custom model file {:?}", path));
-            let mut json_content = String::new();
-            use std::io::Read;
-            file.read_to_string(&mut json_content).unwrap();
-            serde_json::from_str(&json_content).expect("Failed to parse custom model JSON")
+        let custom_model = self.setting.custom_model_path.as_ref().and_then(|path| {
+            let bw_mbps = self.setting.bw_mbps.unwrap_or(100_000.0);
+            let lacking_nodes = self.setting.lacking_nodes.unwrap_or(0.0);
+            let default_latency_us = self.setting.default_latency_us.unwrap_or(1.0);
+            crate::custom_model::CustomModelConfig::load_from_path(
+                path,
+                bw_mbps,
+                lacking_nodes,
+                default_latency_us,
+                self.setting.custom_model_topology.as_deref(),
+            )
         });
 
         Ok(Simulator {
@@ -527,7 +587,7 @@ impl<'a> Executor<'a> for Simulator {
                         r.clone(),
                         &self.cluster,
                         self.ts,
-                        self.host_mapping.as_ref(),
+                        self.host_mapping.as_mut(),
                     );
                 }
                 let min_ts = recs.iter().map(|r| r.ts).min().unwrap_or(self.ts);
@@ -932,22 +992,16 @@ impl NetState {
         mut r: TraceRecord,
         cluster: &Cluster,
         sim_ts: Timestamp,
-        host_mapping: Option<&HostMapping>,
+        host_mapping: Option<&mut HostMapping>,
     ) {
         let start = time::Instant::now();
         if let Some(host_mapping) = host_mapping {
-            r.flow.src = host_mapping
-                .get(&r.flow.src)
-                .unwrap_or_else(|| {
-                    panic!("Hostname {} not found in {:?}", r.flow.src, host_mapping)
-                })
-                .clone();
-            r.flow.dst = host_mapping
-                .get(&r.flow.dst)
-                .unwrap_or_else(|| {
-                    panic!("Hostname {} not found in {:?}", r.flow.dst, host_mapping)
-                })
-                .clone();
+            r.flow.src = host_mapping.map_endpoint(&r.flow.src).unwrap_or_else(|| {
+                panic!("Endpoint {} not found in host mapping {:?}", r.flow.src, host_mapping)
+            });
+            r.flow.dst = host_mapping.map_endpoint(&r.flow.dst).unwrap_or_else(|| {
+                panic!("Endpoint {} not found in host mapping {:?}", r.flow.dst, host_mapping)
+            });
         };
         let (max_rate, route) = {
             // only the physical cluster is what we have, no virtualization

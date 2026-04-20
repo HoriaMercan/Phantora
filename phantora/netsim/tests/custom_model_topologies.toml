@@ -1,0 +1,11 @@
+# Topology selector for multi-topology custom model files (e.g. custom_model_results.json).
+# Use one of these values in [simulator].custom_model_topology.
+
+[topologies.dragonfly]
+custom_model_topology = "dragonfly"
+
+[topologies.fattree]
+custom_model_topology = "fattree"
+
+[topologies.torus]
+custom_model_topology = "torus"

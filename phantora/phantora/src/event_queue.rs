@@ -42,7 +42,7 @@ enum PushEvent {
 #[derive(Clone, Debug, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Action {
     Computation(NodeId, i64 /* computation time */, ComputeMeta),
-    Communication(Flow, CommMeta),
+    Communication(Flow, CommMeta, usize /* nranks */),
 }
 
 pub struct StartedRecord {
@@ -154,18 +154,18 @@ impl EventQueue {
                 self.in_queue_not_started.insert(id, action.clone());
                 self.record_timeline_action(id, action);
             }
-            PushEvent::Start(id, Action::Communication(mut flow, meta)) => {
+            PushEvent::Start(id, Action::Communication(mut flow, meta, nranks)) => {
                 // intercept with custom model if present
                 let mut intercepted = false;
                 let mut est_duration_ns = 0;
                 let op_and_size = match &meta {
-                    cuda_call::CudaCall::NcclAllReduce { count, dtype, .. } => Some(("ncclAllReduce", *count * dtype.size())),
-                    cuda_call::CudaCall::NcclBcast { count, dtype, .. } => Some(("ncclBroadcast", *count * dtype.size())),
+                    cuda_call::CudaCall::NcclAllReduce { count, dtype, .. } => Some(("nccl", "all_reduce", *count * dtype.size())),
+                    cuda_call::CudaCall::NcclBcast { count, dtype, .. } => Some(("nccl", "broadcast", *count * dtype.size())),
                     _ => None,
                 };
-                if let Some((op, size)) = op_and_size {
+                if let Some((framework, op, size)) = op_and_size {
                     if let Some(model) = self.netsim.custom_model.as_ref() {
-                        if let Some(estimated_us) = model.estimate_time(op, size) {
+                        if let Some(estimated_us) = model.estimate_time(framework, op, size, nranks) {
                             est_duration_ns = (estimated_us * 1000.0) as i64;
                             intercepted = true;
                         }
@@ -173,7 +173,7 @@ impl EventQueue {
                 }
                 
                 if intercepted {
-                    let action = Action::Communication(flow.clone(), meta.clone());
+                    let action = Action::Communication(flow.clone(), meta.clone(), nranks);
                     self.event_queue.push(Event::Start(id), prio);
                     self.in_queue_not_started.insert(id, action.clone());
                     self.record_timeline_action(id, action);
@@ -192,7 +192,7 @@ impl EventQueue {
                 let rec = TraceRecord::new(start_ts, flow.clone(), None);
                 log::debug!("{}: Adding {:?} {}", time, rec, id);
 
-                self.record_timeline_action(id, Action::Communication(flow.clone(), meta.clone()));
+                self.record_timeline_action(id, Action::Communication(flow.clone(), meta.clone(), nranks));
 
                 let on_event_result = self.netsim.on_event(netsim::Event::FlowArrive(vec![rec]));
 
@@ -203,7 +203,7 @@ impl EventQueue {
                         // we may add new flows to it later
                         self.event_queue.push(Event::Start(id), prio);
                         self.in_queue_not_started
-                            .insert(id, Action::Communication(flow, meta));
+                            .insert(id, Action::Communication(flow, meta, nranks));
                     }
                     OnEventResult::Rollback(rollbacked_flows) => {
                         log::debug!(
@@ -252,7 +252,7 @@ impl EventQueue {
                         if !new_flow_ended {
                             self.event_queue.push(Event::Start(id), prio);
                             self.in_queue_not_started
-                                .insert(id, Action::Communication(flow, meta));
+                                .insert(id, Action::Communication(flow, meta, nranks));
                         }
                     }
                 }
@@ -416,7 +416,7 @@ impl EventQueue {
         let id = EventId(self.event_counter);
         self.event_counter += 1;
 
-        if let Some(Action::Communication(flow, _meta)) = &action {
+        if let Some(Action::Communication(flow, _meta, _nranks)) = &action {
             self.event_to_flow.insert(id, flow.clone());
         };
 

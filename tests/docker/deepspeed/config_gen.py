@@ -84,6 +84,10 @@ if __name__ == '__main__':
     parser.add_argument("--cpuset_sim", type=str, default=default_sim_core)
     parser.add_argument("--cpuset_host", type=str, default=default_host_cpuset)
     parser.add_argument("--custom_model", type=str, default="")
+    parser.add_argument("--bw_mbps", type=float, default=100000.0)
+    parser.add_argument("--lacking_nodes", type=float, default=0.0)
+    parser.add_argument("--default_latency_us", type=float, default=1.0)
+    parser.add_argument("--custom_model_topology", type=str, choices=["dragonfly", "fattree", "torus"], default="torus")
     args = parser.parse_args()
 
     nhosts = args.nhost
@@ -103,7 +107,14 @@ if __name__ == '__main__':
 
     with open(join(script_dir, "netconfig.toml"), "w") as f:
         host_list = str([f"host-{i}" for i in range(1, nhosts + 1)])
-        custom_model_line = f'custom_model_path = "{args.custom_model}"\n' if args.custom_model else ""
+        custom_model_line = ""
+        if args.custom_model:
+            custom_model_line = f'''custom_model_path = "{args.custom_model}"
+bw_mbps = {args.bw_mbps}
+lacking_nodes = {args.lacking_nodes}
+default_latency_us = {args.default_latency_us}
+          custom_model_topology = "{args.custom_model_topology}"
+'''
         f.write(NETCONFIG_TEMPLATE.format(host_list=host_list, nracks=(nhosts + 1) // 2, custom_model_line=custom_model_line))
 
     with open(join(script_dir, "deepspeed_env"), "w") as f:
