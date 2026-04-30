@@ -12,14 +12,21 @@ ITEMS=(
     "phantora/netsim/"
     "phantora/cuda_call/"
     "phantora/visualizer/"
+    
+    "tests/"
+    # "run_phantora_deepspeed.sh"
+    # "run_phantora_torchtitan.sh"
+    # "custom_model_results.json"
+    run_phantora_64_virtual.sh
+    # logs/
+
+    # Not used:
+
+    # "patch_custom_model_load.py"
+    # "Makefile"
     # "stub/"
     # "include/"
-    "tests/"
-    # "Makefile"
-    "run_phantora_deepspeed.sh"
-    "run_phantora_torchtitan.sh"
-    # "patch_custom_model_load.py"
-    "custom_model_results.json"
+
 )
 
 # Print Usage
@@ -68,7 +75,8 @@ elif [ "$DIRECTION" == "down" ]; then
     for item in "${ITEMS[@]}"; do
         echo "-----------------------------------"
         echo "Syncing $item..."
-        if [[ "$item" == run_phantora_*.sh ]]; then
+        # if logs/ then source is $REMOTE_BASE_DIR/logs/ else source is $REMOTE_BASE_DIR/Phantora/logs/
+        if [[ "$item" == run_phantora_*.sh || "$item" == logs/ ]]; then
             SOURCE_DIR="$REMOTE_BASE_DIR"
         else
             SOURCE_DIR="$REMOTE_BASE_DIR/Phantora"

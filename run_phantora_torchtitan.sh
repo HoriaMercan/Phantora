@@ -4,259 +4,107 @@
 #SBATCH --partition=dgxh100
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:3
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=01:00:00
 
 set -euo pipefail
-
-# --- ENVIRONMENT SETTINGS ---
-# Optional: Load CUDA module if required by your host/cluster setup
-# module load cuda
-
-# Prevent memory lock issues for deep learning tasks
 ulimit -l unlimited
 ulimit -s unlimited
-
-# --- CONFIGURATION ---
 SIF_IMAGE="/export/home/acs/stud/h/horia.mercan/licenta_build/phantora-original.sif"
 WORKSPACE_DIR="$PWD"
-SLURM_NNODES="${SLURM_NNODES:-1}"
-SLURM_GPUS_PER_NODE="${SLURM_GPUS_PER_NODE:-2}"
-
-# Runtime parameters (torchrun world size) - derive from SLURM by default
-EVAL_NNODES="${EVAL_NNODES:-$SLURM_NNODES}"
-EVAL_NGPU="${EVAL_NGPU:-$SLURM_GPUS_PER_NODE}"
+SIM_NODES="${SIM_NODES:-8}"
+SIM_GPUS_PER_NODE="${SIM_GPUS_PER_NODE:-8}"
+EVAL_NNODES="${EVAL_NNODES:-1}"
+EVAL_NGPU="${EVAL_NGPU:-3}"
 EVAL_VRAM_MIB="${EVAL_VRAM_MIB:-81920}"
-
-# Simulation topology parameters - default to runtime world size, can be overridden
-# Override examples:
-#   SIM_NODES=8 SIM_GPUS_PER_NODE=8 ./run_phantora_torchtitan.sh
-#   SIM_NODES=16 SIM_GPUS_PER_NODE=8 ./run_phantora_torchtitan.sh
-SIM_NODES="${SIM_NODES:-$EVAL_NNODES}"
-SIM_GPUS_PER_NODE="${SIM_GPUS_PER_NODE:-$EVAL_NGPU}"
-
 PHANTORA_CUSTOM_MODEL_PATH="${PHANTORA_CUSTOM_MODEL_PATH:-$WORKSPACE_DIR/custom_model_results.json}"
-PHANTORA_BW_MBPS="${PHANTORA_BW_MBPS:-3600000.0}" # ~450 GB/s one-way NVLink ~= 3,600,000 Mbps
+PHANTORA_BW_MBPS="${PHANTORA_BW_MBPS:-450000.0}"
 PHANTORA_LACKING_NODES="${PHANTORA_LACKING_NODES:-0.0}"
 PHANTORA_DEFAULT_LATENCY_US="${PHANTORA_DEFAULT_LATENCY_US:-1.0}"
-PHANTORA_CUSTOM_MODEL_TOPOLOGY="${PHANTORA_CUSTOM_MODEL_TOPOLOGY:-dragonfly}"
+PHANTORA_CUSTOM_MODEL_TOPOLOGY="${PHANTORA_CUSTOM_MODEL_TOPOLOGY:-fattree}"
+
+export SIM_NODES SIM_GPUS_PER_NODE EVAL_NNODES EVAL_NGPU EVAL_VRAM_MIB
+export PHANTORA_CUSTOM_MODEL_PATH PHANTORA_BW_MBPS PHANTORA_LACKING_NODES PHANTORA_DEFAULT_LATENCY_US PHANTORA_CUSTOM_MODEL_TOPOLOGY
 
 RUNTIME_HOSTFILE="$WORKSPACE_DIR/tests/docker/torchtitan/hostfile.runtime"
 mkdir -p "$(dirname "$RUNTIME_HOSTFILE")"
 
-if [[ "$EVAL_NNODES" == "1" ]]; then
-        THIS_HOST=$(hostname)
-        printf '%s slots=%s\n' "$THIS_HOST" "$EVAL_NGPU" > "$RUNTIME_HOSTFILE"
+if [[ -z "${SLURM_NODELIST:-}" ]]; then
+        printf '%s slots=%s\n' "$(hostname)" "$EVAL_NGPU" > "$RUNTIME_HOSTFILE"
 else
-        if [[ -z "${SLURM_NODELIST:-}" ]]; then
-                echo "ERROR: SLURM_NODELIST is empty for multi-node run."
-                exit 1
-        fi
-
         mapfile -t SLURM_HOSTS < <(scontrol show hostnames "$SLURM_NODELIST")
         if (( ${#SLURM_HOSTS[@]} < EVAL_NNODES )); then
                 echo "ERROR: Requested EVAL_NNODES=$EVAL_NNODES but only ${#SLURM_HOSTS[@]} host(s) in SLURM_NODELIST."
                 exit 1
         fi
 
-        : > "$RUNTIME_HOSTFILE"
-        for ((i = 0; i < EVAL_NNODES; i++)); do
-                printf '%s slots=%s\n' "${SLURM_HOSTS[$i]}" "$EVAL_NGPU" >> "$RUNTIME_HOSTFILE"
-        done
-fi
+        srun apptainer exec --nv --bind "$WORKSPACE_DIR:/mnt" --pwd /mnt "$SIF_IMAGE" bash <<'EOF'
+        set -euo pipefail
 
+        REPO_ROOT=/mnt
+        [[ -d /mnt/Phantora ]] && REPO_ROOT=/mnt/Phantora
 
-echo "----------------------------------------------------"
-echo "Running Phantora TorchTitan Test Job"
-echo "Image: $SIF_IMAGE"
-echo "Workspace: $WORKSPACE_DIR"
-echo "Runtime world size: ${EVAL_NNODES} nodes x ${EVAL_NGPU} gpus/node = $((EVAL_NNODES * EVAL_NGPU)) ranks"
-echo "Simulated topology: ${SIM_NODES} nodes x ${SIM_GPUS_PER_NODE} gpus/node = $((SIM_NODES * SIM_GPUS_PER_NODE)) gpus"
-echo "Custom model topology: ${PHANTORA_CUSTOM_MODEL_TOPOLOGY}"
-echo "Runtime hostfile: ${RUNTIME_HOSTFILE}"
-echo "----------------------------------------------------"
-
-# Make sure the logs directory exists
-mkdir -p logs
-
-# Please ensure the tokenizer is downloaded. Note that Llama 3 is gated so you need a Hugging Face token:
-# wget --header="Authorization: Bearer YOUR_HF_TOKEN" https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct/resolve/main/original/tokenizer.model -O Phantora/tests/assets/tokenizer.model
-
-# --- EXECUTION ---
-# Using srun to allocate the resources within the SLURM allocation.
-# We bind the current working directory to /mnt. 
-# The commands are passed via bash -c to run sequentially within the container environment.
-
-srun apptainer exec --nv \
-    --bind "$WORKSPACE_DIR:/mnt" \
-    --pwd /mnt \
-    "$SIF_IMAGE" bash -c "
-                set -euo pipefail
-
-        if [[ -d /mnt/Phantora ]]; then
-                REPO_ROOT=/mnt/Phantora
-        else
-                REPO_ROOT=/mnt
-        fi
-
-        # 1. Setup paths
         export CUDA_HOME=/usr/local/cuda
-        export TORCH_LIB=\$(python3 -c \"import torch, os; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))\")
-        export PYTHON_LIB=\$(python3 -c \"import sysconfig; print(sysconfig.get_config_var('LIBDIR'))\")
-        
-                # Build library search path with real CUDA runtime first.
-                # Accept CUDA 12 or CUDA 11 runtimes depending on how flash-attn was built.
-                REAL_CUDART=\$(ldconfig -p 2>/dev/null | awk '/libcudart.so.12/ {print \$NF; exit}')
-                if [[ -z "\$REAL_CUDART" ]]; then
-                        REAL_CUDART=\$(ldconfig -p 2>/dev/null | awk '/libcudart.so.11/ {print \$NF; exit}')
-                fi
-                if [[ -z "\$REAL_CUDART" ]]; then
-                        REAL_CUDART=\$(ldconfig -p 2>/dev/null | awk '/libcudart.so$/ {print \$NF; exit}')
-                fi
-                if [[ -z "\$REAL_CUDART" ]]; then
-                        for candidate in \
-                                /.singularity.d/libs/libcudart.so.12 \
-                                /.singularity.d/libs/libcudart.so.11 \
-                                /.singularity.d/libs/libcudart.so \
-                                /usr/lib64/libcudart.so.12 \
-                                /usr/lib64/libcudart.so.11 \
-                                /usr/lib64/libcudart.so \
-                                /usr/lib/x86_64-linux-gnu/libcudart.so.12 \
-                                /usr/lib/x86_64-linux-gnu/libcudart.so.11 \
-                                /usr/lib/x86_64-linux-gnu/libcudart.so \
-                                \$CUDA_HOME/lib64/libcudart.so.12 \
-                                \$CUDA_HOME/lib64/libcudart.so.11 \
-                                \$CUDA_HOME/lib64/libcudart.so; do
-                                if [[ -e "\$candidate" ]]; then
-                                        REAL_CUDART="\$candidate"
-                                        break
-                                fi
-                        done
-                fi
-
-                if [[ -z "\$REAL_CUDART" ]]; then
-                        echo 'ERROR: libcudart not found in container runtime.'
-                        exit 1
-                fi
-
-                REAL_CUDART_DIR=\$(dirname \"\$REAL_CUDART\")
-                BASE_LD_LIBRARY_PATH=\$REAL_CUDART_DIR:\$TORCH_LIB:\$PYTHON_LIB:\$CUDA_HOME/lib64:\${LD_LIBRARY_PATH:-}
-                export LD_LIBRARY_PATH=\$BASE_LD_LIBRARY_PATH
-                export LIBRARY_PATH=\$LD_LIBRARY_PATH
-
-        # export PHANTORA=1
-        # 2. Configure Cargo
         export CARGO_HOME=/mnt/.cargo_home
-        mkdir -p \$CARGO_HOME
-
-        export SOCKET_DIR=\"/tmp/phantora_\$(date +%s)_$SLURM_JOB_ID\"
-        mkdir -p \$SOCKET_DIR
-        chmod 777 \$SOCKET_DIR
-        export PHANTORA_SOCKET_PREFIX=\"\$SOCKET_DIR\"
+        export LD_LIBRARY_PATH=/phantora/dist:${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}
+        mkdir -p "$CARGO_HOME"
 
         cleanup() {
-            if [[ -n \"\${SIM_PID:-}\" ]] && kill -0 \"\$SIM_PID\" 2>/dev/null; then
-                kill \"\$SIM_PID\" || true
-                wait \"\$SIM_PID\" || true
-            fi
-            rm -rf \"\$SOCKET_DIR\" || true
+          if [[ -n "${SIM_PID:-}" ]] && kill -0 "$SIM_PID" 2>/dev/null; then
+            kill "$SIM_PID" || true
+            wait "$SIM_PID" || true
+          fi
         }
         trap cleanup EXIT
 
+        cd "$REPO_ROOT/phantora"
+        cargo build --release
 
-                # 3. Build simulator binary
-        cd \"\$REPO_ROOT/phantora\"
-        cargo build --release || { echo 'Cargo build failed'; exit 1; }
+        cd "$REPO_ROOT"
+        python3 tests/docker/torchtitan/config_gen.py \
+          --nhost "$SIM_NODES" \
+          --ngpu "$SIM_GPUS_PER_NODE" \
+          --custom_model "$PHANTORA_CUSTOM_MODEL_PATH" \
+          --bw_mbps "$PHANTORA_BW_MBPS" \
+          --lacking_nodes "$PHANTORA_LACKING_NODES" \
+          --default_latency_us "$PHANTORA_DEFAULT_LATENCY_US" \
+          --custom_model_topology "$PHANTORA_CUSTOM_MODEL_TOPOLOGY"
 
-        # 4. Prepare args
-                EVAL_NNODES=$EVAL_NNODES
-                EVAL_NGPU=$EVAL_NGPU
+        NETCONFIG_FILE="$REPO_ROOT/tests/docker/torchtitan/netconfig.toml"
+        HOSTFILE="$REPO_ROOT/tests/docker/torchtitan/hostfile.runtime"
+        mapfile -t RUNTIME_HOSTS < <(awk '{print $1}' "$HOSTFILE")
+        for ((i = 1; i <= SIM_NODES; i++)); do
+          sed -i "s/host-$i/${RUNTIME_HOSTS[$(((i - 1) % ${#RUNTIME_HOSTS[@]}))]}/g" "$NETCONFIG_FILE"
+        done
 
-                # 5. Generate netconfig from torchtitan template files
-                cd \"\$REPO_ROOT\"
-                echo 'Generating netconfig.toml with config_gen.py...'
-                python3 tests/docker/torchtitan/config_gen.py \
-                        --nhost $SIM_NODES \
-                        --ngpu $SIM_GPUS_PER_NODE \
-                        --custom_model \"${PHANTORA_CUSTOM_MODEL_PATH:-}\" \
-                        --bw_mbps $PHANTORA_BW_MBPS \
-                        --lacking_nodes $PHANTORA_LACKING_NODES \
-                        --default_latency_us $PHANTORA_DEFAULT_LATENCY_US \
-                        --custom_model_topology $PHANTORA_CUSTOM_MODEL_TOPOLOGY
-
-                        NETCONFIG_FILE=\"\$REPO_ROOT/tests/docker/torchtitan/netconfig.toml\"
-
-                # Replace logical host-i entries in netconfig with runtime hostnames.
-                # If SIM_NODES > runtime hosts, distribute simulated hosts round-robin.
-                if [[ -f /mnt/tests/docker/torchtitan/hostfile.runtime ]]; then
-                        HOSTFILE=/mnt/tests/docker/torchtitan/hostfile.runtime
-                elif [[ -f \"\$REPO_ROOT/tests/docker/torchtitan/hostfile.runtime\" ]]; then
-                        HOSTFILE=\"\$REPO_ROOT/tests/docker/torchtitan/hostfile.runtime\"
-                else
-                        echo \"ERROR: hostfile.runtime not found in expected locations:\"
-                        echo \"  - /mnt/tests/docker/torchtitan/hostfile.runtime\"
-                        echo \"  - \$REPO_ROOT/tests/docker/torchtitan/hostfile.runtime\"
-                        echo \"Current /mnt contents:\" && ls -la /mnt || true
-                        echo \"Current \$REPO_ROOT/tests/docker/torchtitan contents:\" && ls -la \"\$REPO_ROOT/tests/docker/torchtitan\" || true
-                        exit 1
-                fi
-                mapfile -t RUNTIME_HOSTS < <(awk '{print \$1}' \"\$HOSTFILE\")
-                if [[ \"\${#RUNTIME_HOSTS[@]}\" -eq 0 ]]; then
-                        echo \"ERROR: runtime hostfile has no hosts: \$HOSTFILE\"
-                        exit 1
-                fi
-
-                for ((i = 1; i <= SIM_NODES; i++)); do
-                        host_index=\$(((i - 1) % \${#RUNTIME_HOSTS[@]}))
-                        runtime_host=\${RUNTIME_HOSTS[\$host_index]}
-                        sed -i \"s/host-\$i/\$runtime_host/g\" \"\$NETCONFIG_FILE\"
-                done
-        
-                # 6. Start Simulator
-                cd \"\$REPO_ROOT/phantora\"
-        echo 'Building computational graph...'
+        cd "$REPO_ROOT/phantora"
         python3 build_graph.py
+        PHANTORA_SOCKET_PREFIX="/tmp/phantora_${SLURM_JOB_ID:-$$}"
+        ./target/release/simulator --netconfig "$NETCONFIG_FILE" &
+        SIM_PID=$!
 
-        echo 'Starting Phantora Simulator server...'
-                PHANTORA_SOCKET_PREFIX=\$PHANTORA_SOCKET_PREFIX \
-                LD_PRELOAD= \
-                LD_LIBRARY_PATH=\$BASE_LD_LIBRARY_PATH \
-                RUST_BACKTRACE=full ./target/release/simulator \
-                        --netconfig \"\$NETCONFIG_FILE\" &
-        
-        SIM_PID=\$!
+        for _ in $(seq 1 30); do
+          [[ -S "${PHANTORA_SOCKET_PREFIX}.simulator.sock" ]] && break
+          sleep 1
+        done
+        [[ -S "${PHANTORA_SOCKET_PREFIX}.simulator.sock" ]]
 
-                for _ in \$(seq 1 30); do
-                        if [[ -S \"\${PHANTORA_SOCKET_PREFIX}.simulator.sock\" ]]; then
-                                break
-                        fi
-                        sleep 1
-                done
+        cd "$REPO_ROOT"
+        PHANTORA_SOCKET_PREFIX="$PHANTORA_SOCKET_PREFIX" \
+        PHANTORA_VRAM_MIB="$EVAL_VRAM_MIB" \
+        PHANTORA_NGPU="$EVAL_NGPU" \
+        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+        LD_PRELOAD=/phantora/dist/libcuda.so.1 \
+        /phantora/dist/phantora_run torchrun \
+          --nproc_per_node "$EVAL_NGPU" \
+          --nnodes "$EVAL_NNODES" \
+          tests/test_torchtitan.py \
+          --job.config_file=tests/test_torchtitan_llama3_8b.toml
+        EOF
 
-                if [[ ! -S \"\${PHANTORA_SOCKET_PREFIX}.simulator.sock\" ]]; then
-                        echo 'Simulator socket was not created in time. Exiting.'
-                        exit 1
-                fi
-        
-                # 7. Run TorchTitan
-        echo 'Starting TorchTitan training simulation...'
-        cd \"\$REPO_ROOT\"
-
-        # FORCE Python to use the library that WE KNOW has the symbol
-        # We point LD_PRELOAD to the one inside the container (/phantora/...)
-        PHANTORA_SOCKET_PREFIX=\$PHANTORA_SOCKET_PREFIX \
-                PHANTORA_VRAM_MIB=$EVAL_VRAM_MIB \
-                PHANTORA_NGPU=$EVAL_NGPU \
-                PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-                LD_LIBRARY_PATH=/phantora/dist:\$BASE_LD_LIBRARY_PATH \
-        LD_PRELOAD=/phantora/dist/libcuda.so.1 /phantora/dist/phantora_run torchrun \\
-            --nproc_per_node \$EVAL_NGPU \\
-            --nnodes \$EVAL_NNODES \\
-            tests/test_torchtitan.py \\
-            --job.config_file=tests/test_torchtitan_llama3_8b.toml
-
+        echo "Job finished."
         # TorchTitan is finished, tell the background simulator to shut down
         kill "\$SIM_PID" || true
         wait "\$SIM_PID" || true
