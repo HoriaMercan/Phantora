@@ -1,5 +1,5 @@
 [job]
-dump_folder = "trace"
+dump_folder = "/tmp/trace"
 description = "Llama 3 8B training"
 
 [profiling]
