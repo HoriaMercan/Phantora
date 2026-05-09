@@ -9,3 +9,5 @@
 /.venv/
 /.vscode/
 __pycache__/
+visualizer-output
+visualizer.json

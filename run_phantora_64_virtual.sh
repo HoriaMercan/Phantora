@@ -72,14 +72,16 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Starting Simulator..."
+touch "$WORKSPACE_DIR/visualizer-output" # Simulator needs this file to exist beforehand
 apptainer exec --nv \
   --bind "$WORKSPACE_DIR:/mnt" \
   --bind "$FAKE_HOSTS:/etc/hosts" \
+  --bind "$WORKSPACE_DIR/visualizer-output:/mnt/visualizer-output" \
   --pwd /mnt \
   "$SIF_IMAGE" bash -c "
     export PHANTORA_SOCKET_PREFIX=$PHANTORA_SOCKET_PREFIX
     export PHANTORA_LOG=\${PHANTORA_LOG:-info}
-    ./Phantora/phantora/target/release/simulator --netconfig Phantora/tests/docker/torchtitan/netconfig.toml
+    ./Phantora/phantora/target/release/simulator --netconfig Phantora/tests/docker/torchtitan/netconfig.toml --timeline-file ./visualizer-output
 " &
 SIM_PID=$!
 
