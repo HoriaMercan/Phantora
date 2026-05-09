@@ -160,21 +160,24 @@ impl EventQueue {
                 let mut est_duration_ns = 0;
 
                 let operation_and_size = match &meta {
-                    CommMeta::NcclAllGather { count, dtype, .. } =>
-                        Some(("nccl", "all_gather", *count * dtype.size())),
-                    CommMeta::NcclAllReduce { count, dtype, .. } =>
-                        Some(("nccl", "all_reduce", *count * dtype.size())),
-                    CommMeta::NcclReduceScatter { count, dtype, .. } =>
-                        Some(("nccl", "reduce_scatter", *count * dtype.size())),
+                    // CommMeta::NcclAllGather { count, dtype, .. } =>
+                    //     Some(("nccl", "all_gather", *count * dtype.size())),
+                    // CommMeta::NcclAllReduce { count, dtype, .. } =>
+                    //     Some(("nccl", "all_reduce", *count * dtype.size())),
+                    // CommMeta::NcclReduceScatter { count, dtype, .. } =>
+                    //     Some(("nccl", "reduce_scatter", *count * dtype.size())),
                     CommMeta::NcclBcast { count, dtype, .. } =>
                         Some(("nccl", "bcast", *count * dtype.size())),
                     _ => None
                 };
 
+
                 if let Some((framework, op, size)) = operation_and_size {
                     if let Some(model) = self.netsim.custom_model.as_ref() {
                         if let Some(estimated_us) = model.estimate_time(framework, op, size, nranks) {
-                            est_duration_ns = (estimated_us * 1000.0) as i64;
+                            // log::info!("Custom model estimated duration operation {:?} for flow {:?}: {} us",
+                            //     op, flow, estimated_us);
+                            est_duration_ns = (estimated_us * 1.000) as i64;
                             interceptedByModel = true;
                         }
                     }

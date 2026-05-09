@@ -15,6 +15,19 @@ fn main() {
 
     let _args = get_args();
     main_loop();
+
+    // use std::fs::File;
+    
+    // let file = File::create("/mnt/phantora.log").expect("Failed to create log file");
+    // let env = env_logger::Env::new()
+    //     .filter_or("PHANTORA_LOG", "debug");
+    // env_logger::Builder::from_env(env)
+    //     .write_style(env_logger::WriteStyle::Always)
+    //     .target(env_logger::Target::Pipe(Box::new(file)))
+    //     .init();
+
+    // let _args = get_args();
+    // main_loop();
 }
 
 #[derive(Serialize, Deserialize)]

@@ -48,6 +48,7 @@ host_mapping = {host_list}
 [simulator]
 loopback_speed = 2880
 fairness = "PerFlowMaxMin"
+{custom_model_config}
 
 [topology]
 type = "TwoLayerMultiPath"
@@ -81,6 +82,12 @@ if __name__ == '__main__':
     parser.add_argument("--vram_mib", type=int, default=143771)
     parser.add_argument("--cpuset_sim", type=str, default=default_sim_core)
     parser.add_argument("--cpuset_host", type=str, default=default_host_cpuset)
+    parser.add_argument("--custom_model", type=str, default="")
+    parser.add_argument("--bw_mbps", type=float, default=4500000.0)
+    parser.add_argument("--lacking_nodes", type=float, default=0.0)
+    parser.add_argument("--default_latency_us", type=float, default=0.05)
+    parser.add_argument("--custom_model_topology", type=str, default="fattree")
+
     args = parser.parse_args()
 
     nhosts = args.nhost
@@ -103,7 +110,16 @@ if __name__ == '__main__':
         rack_size = nhosts if nhosts <= 8 else 8
         # nracks: fit hosts into racks; e.g., 8 hosts in 8-sized rack = 1 rack, 16 hosts = 2 racks
         nracks = (nhosts + rack_size - 1) // rack_size
-        f.write(NETCONFIG_TEMPLATE.format(host_list=host_list, nracks=nracks, nspines=nspines, rack_size=rack_size))
+        
+        custom_model_line = ""
+        if args.custom_model:
+            custom_model_line = f'''custom_model_path = "{args.custom_model}"
+bw_mbps = {args.bw_mbps}
+lacking_nodes = {args.lacking_nodes}
+default_latency_us = {args.default_latency_us}
+          custom_model_topology = "{args.custom_model_topology}"
+'''
+        f.write(NETCONFIG_TEMPLATE.format(host_list=host_list, nracks=nracks, nspines=nspines, rack_size=rack_size, custom_model_config=custom_model_line))
 
     with open(join(script_dir, "config.sh"), "w") as f:
         f.write(f"EVAL_NHOST={nhosts}\n")

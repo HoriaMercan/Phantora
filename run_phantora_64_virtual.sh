@@ -25,8 +25,8 @@ EVAL_NGPU="${EVAL_NGPU:-1}" # Per virtual host
 PHANTORA_CUSTOM_MODEL_PATH="${PHANTORA_CUSTOM_MODEL_PATH:-$WORKSPACE_DIR/custom_model_results.json}"
 PHANTORA_BW_MBPS="${PHANTORA_BW_MBPS:-4500000.0}"
 PHANTORA_LACKING_NODES="${PHANTORA_LACKING_NODES:-0.0}"
-PHANTORA_DEFAULT_LATENCY_US="${PHANTORA_DEFAULT_LATENCY_US:-0.05}"
-PHANTORA_CUSTOM_MODEL_TOPOLOGY="${PHANTORA_CUSTOM_MODEL_TOPOLOGY:-dragonfly}"
+PHANTORA_DEFAULT_LATENCY_US="${PHANTORA_DEFAULT_LATENCY_US:-2.0}"
+PHANTORA_CUSTOM_MODEL_TOPOLOGY="${PHANTORA_CUSTOM_MODEL_TOPOLOGY:-fattree}"
 
 # 1) Build local fake /etc/hosts so virtual hosts can resolve each other and 'host-1' for rdzv
 FAKE_HOSTS="/tmp/phantora_hosts_${SLURM_JOB_ID:-$$}"
@@ -47,11 +47,11 @@ cd /mnt
 python3 Phantora/tests/docker/torchtitan/config_gen.py \
   --nhost "$SIM_NODES" \
   --ngpu "$SIM_GPUS_PER_NODE" \
-  # --custom_model "$PHANTORA_CUSTOM_MODEL_PATH" \
-  # --bw_mbps "$PHANTORA_BW_MBPS" \
-  # --lacking_nodes "$PHANTORA_LACKING_NODES" \
-  # --default_latency_us "$PHANTORA_DEFAULT_LATENCY_US" \
-  # --custom_model_topology "$PHANTORA_CUSTOM_MODEL_TOPOLOGY"
+  --custom_model "$PHANTORA_CUSTOM_MODEL_PATH" \
+  --bw_mbps "$PHANTORA_BW_MBPS" \
+  --lacking_nodes "$PHANTORA_LACKING_NODES" \
+  --default_latency_us "$PHANTORA_DEFAULT_LATENCY_US" \
+  --custom_model_topology "$PHANTORA_CUSTOM_MODEL_TOPOLOGY"
 
 cd Phantora/phantora
 # python3 build_graph.py
@@ -73,14 +73,17 @@ trap cleanup EXIT
 
 echo "Starting Simulator..."
 touch "$WORKSPACE_DIR/visualizer-output" # Simulator needs this file to exist beforehand
+touch "$WORKSPACE_DIR/phantora.log" # Ensure log file exists and is writable
 apptainer exec --nv \
   --bind "$WORKSPACE_DIR:/mnt" \
   --bind "$FAKE_HOSTS:/etc/hosts" \
   --bind "$WORKSPACE_DIR/visualizer-output:/mnt/visualizer-output" \
+  --bind "$WORKSPACE_DIR/phantora.log:/mnt/phantora.log" \
   --pwd /mnt \
   "$SIF_IMAGE" bash -c "
     export PHANTORA_SOCKET_PREFIX=$PHANTORA_SOCKET_PREFIX
-    export PHANTORA_LOG=\${PHANTORA_LOG:-info}
+    export PHANTORA_LOG=info
+    export PHANTORA_LOG_STYLE=auto
     ./Phantora/phantora/target/release/simulator --netconfig Phantora/tests/docker/torchtitan/netconfig.toml --timeline-file ./visualizer-output
 " &
 SIM_PID=$!
