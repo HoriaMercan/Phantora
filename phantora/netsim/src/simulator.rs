@@ -17,8 +17,7 @@ use crate::{
     timer::{OnceTimer, Timer, TimerKind},
 };
 use crate::{
-    Duration, FairnessModel, Flow, TenantId, Timestamp, ToStdDuration, Token, Trace, TraceRecord,
-    TIMER_ID,
+    Duration, FairnessModel, Flow, TIMER_ID, TenantId, Timestamp, ToStdDuration, Token, Trace, TraceRecord, custom_model
 };
 
 type HashMap<K, V> = IndexMap<K, V, FnvBuildHasher>;
@@ -43,12 +42,20 @@ pub trait Executor<'a> {
     fn run_one_step(&mut self, until: Option<Timestamp>) -> AppEvent;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SimulatorSetting {
     #[serde(serialize_with = "serialize_bandwidth")]
     #[serde(deserialize_with = "deserialize_bandwidth")]
     pub loopback_speed: Bandwidth,
     pub fairness: FairnessModel,
+    pub custom_model_path: Option<std::path::PathBuf>,
+    pub custom_model_topology: Option<String>,
+    #[serde(default)]
+    pub bw_mbps: Option<f64>,
+    #[serde(default)]
+    pub lacking_nodes: Option<f64>,
+    #[serde(default)]
+    pub default_latency_us: Option<f64>,
 }
 
 impl Default for SimulatorSetting {
@@ -56,6 +63,11 @@ impl Default for SimulatorSetting {
         Self {
             fairness: FairnessModel::default(),
             loopback_speed: LOOPBACK_SPEED_GBPS.gbps(),
+            custom_model_path: None,
+            custom_model_topology: None,
+            bw_mbps: None,
+            lacking_nodes: None,
+            default_latency_us: None,
         }
     }
 }
@@ -84,6 +96,7 @@ pub struct SimulatorBuilder {
     setting: SimulatorSetting,
     // Real world hostname to "host_{i}" (the naming convention used in `cluster::Cluster`)
     host_mapping: Option<HostMapping>,
+    pub custom_model: Option<crate::custom_model::CustomModelConfig>,
 }
 
 #[derive(Debug, Error)]
@@ -104,6 +117,7 @@ impl SimulatorBuilder {
             cluster: None,
             setting: Default::default(),
             host_mapping: None,
+            custom_model: None,
         }
     }
 
@@ -143,13 +157,28 @@ impl SimulatorBuilder {
             return Err(Error::EmptyCluster);
         }
 
+        let custom_model = self.setting.custom_model_path.as_ref()
+        .and_then(|path| {
+            let bw_mbps = self.setting.bw_mbps.unwrap_or(1000.0);
+            let lacking_nodes = self.setting.lacking_nodes.unwrap_or(0.0);
+            let default_latency_us = self.setting.default_latency_us.unwrap_or(0.0);
+            crate::custom_model::CustomModelConfig::load_from_path(
+                path,
+                bw_mbps,
+                lacking_nodes,
+                default_latency_us,
+                self.setting.custom_model_topology.as_deref(),
+            )
+        });
+
         Ok(Simulator {
             cluster: self.cluster.take().unwrap(),
             ts: 0,
             state: NetState::default(),
             timers: BinaryHeap::<Box<dyn Timer>>::new(),
-            setting: self.setting,
+            setting: self.setting.clone(),
             host_mapping: self.host_mapping.take(),
+            custom_model
         })
     }
 }
@@ -163,6 +192,7 @@ pub struct Simulator {
     // setting
     setting: SimulatorSetting,
     host_mapping: Option<HostMapping>,
+    pub custom_model: Option<crate::custom_model::CustomModelConfig>,
 }
 
 macro_rules! calc_delta_on_group {
@@ -226,6 +256,7 @@ impl Simulator {
             timers: BinaryHeap::new(),
             setting: SimulatorSetting::default(),
             host_mapping: None,
+            custom_model: None,
         }
     }
 

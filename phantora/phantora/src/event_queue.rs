@@ -42,7 +42,7 @@ enum PushEvent {
 #[derive(Clone, Debug, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Action {
     Computation(NodeId, i64 /* computation time */, ComputeMeta),
-    Communication(Flow, CommMeta),
+    Communication(Flow, CommMeta, usize /* nranks */),
 }
 
 pub struct StartedRecord {
@@ -154,7 +154,43 @@ impl EventQueue {
                 self.in_queue_not_started.insert(id, action.clone());
                 self.record_timeline_action(id, action);
             }
-            PushEvent::Start(id, Action::Communication(mut flow, meta)) => {
+            PushEvent::Start(id, Action::Communication(mut flow, meta, nranks)) => {
+                let mut interceptedByModel = false;
+
+                let mut est_duration_ns = 0;
+
+                let operation_and_size = match &meta {
+                    CommMeta::NcclAllGather { count, dtype, .. } =>
+                        Some(("nccl", "all_gather", *count * dtype.size())),
+                    CommMeta::NcclAllReduce { count, dtype, .. } =>
+                        Some(("nccl", "all_reduce", *count * dtype.size())),
+                    CommMeta::NcclReduceScatter { count, dtype, .. } =>
+                        Some(("nccl", "reduce_scatter", *count * dtype.size())),
+                    CommMeta::NcclBcast { count, dtype, .. } =>
+                        Some(("nccl", "bcast", *count * dtype.size())),
+                    _ => None
+                };
+
+                if let Some((framework, op, size)) = operation_and_size {
+                    if let Some(model) = self.netsim.custom_model.as_ref() {
+                        if let Some(estimated_us) = model.estimate_time(framework, op, size, nranks) {
+                            est_duration_ns = (estimated_us * 1000.0) as i64;
+                            interceptedByModel = true;
+                        }
+                    }
+                }
+
+                if interceptedByModel {
+                    let action = Action::Communication(flow.clone(), meta.clone(), nranks);
+                    self.event_queue.push(Event::Start(id), prio);
+                    self.in_queue_not_started.insert(id, action.clone());
+                    self.record_timeline_action(id, action);
+
+                    // Directly push an End event so the custom simulator time dictates its runtime
+                    self.push_event(PushEvent::End(id), time + est_duration_ns);
+                    return;
+                }
+                
                 // Add a new flow to the network simulator dynamically
                 assert!(flow.token.is_none());
                 // update the actual start time and associate it with the event_id
@@ -164,7 +200,7 @@ impl EventQueue {
                 let rec = TraceRecord::new(start_ts, flow.clone(), None);
                 log::debug!("{}: Adding {:?} {}", time, rec, id);
 
-                self.record_timeline_action(id, Action::Communication(flow.clone(), meta.clone()));
+                self.record_timeline_action(id, Action::Communication(flow.clone(), meta.clone(), nranks));
 
                 let on_event_result = self.netsim.on_event(netsim::Event::FlowArrive(vec![rec]));
 
@@ -175,7 +211,7 @@ impl EventQueue {
                         // we may add new flows to it later
                         self.event_queue.push(Event::Start(id), prio);
                         self.in_queue_not_started
-                            .insert(id, Action::Communication(flow, meta));
+                            .insert(id, Action::Communication(flow, meta, nranks));
                     }
                     OnEventResult::Rollback(rollbacked_flows) => {
                         log::debug!(
@@ -224,7 +260,7 @@ impl EventQueue {
                         if !new_flow_ended {
                             self.event_queue.push(Event::Start(id), prio);
                             self.in_queue_not_started
-                                .insert(id, Action::Communication(flow, meta));
+                                .insert(id, Action::Communication(flow, meta, nranks));
                         }
                     }
                 }
@@ -388,7 +424,7 @@ impl EventQueue {
         let id = EventId(self.event_counter);
         self.event_counter += 1;
 
-        if let Some(Action::Communication(flow, _meta)) = &action {
+        if let Some(Action::Communication(flow, _meta, nranks)) = &action {
             self.event_to_flow.insert(id, flow.clone());
         };
 

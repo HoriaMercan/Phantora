@@ -8,7 +8,7 @@ LOCAL_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # List of files and directories to sync (paths are relative to the Phantora base direction)
 # You can modify this array to add or remove paths you'd like to sync.
 ITEMS=(
-    "phantora/"
+    "phantora/" # Exclude target/
     
     "tests/"
     # "run_phantora_deepspeed.sh"
@@ -56,10 +56,14 @@ if [ "$DIRECTION" == "up" ]; then
         echo "Syncing $item ..."
         if [[ "$item" == run_phantora_*.sh ]]; then
             TARGET_DIR="$REMOTE_BASE_DIR"
+            rsync -avz --progress --relative "$item" "$REMOTE_USER_HOST:$TARGET_DIR/"
+        elif [[ "$item" == "phantora/" ]]; then
+            TARGET_DIR="$REMOTE_BASE_DIR/Phantora"
+            rsync -avz --progress --relative --exclude='target' "$item" "$REMOTE_USER_HOST:$TARGET_DIR/"
         else
             TARGET_DIR="$REMOTE_BASE_DIR/Phantora"
-        fi
-        rsync -avz --progress --relative "$item" "$REMOTE_USER_HOST:$TARGET_DIR/"
+            rsync -avz --progress --relative "$item" "$REMOTE_USER_HOST:$TARGET_DIR/"
+        fi 
     done
     
     echo "-----------------------------------"
@@ -78,8 +82,12 @@ elif [ "$DIRECTION" == "down" ]; then
         else
             SOURCE_DIR="$REMOTE_BASE_DIR/Phantora"
         fi
-        # The /./ syntax tells rsync where the relative path starts on the remote string
-        rsync -avz --progress --relative "$REMOTE_USER_HOST:$SOURCE_DIR/./$item" "$LOCAL_BASE_DIR/"
+        if [[ "$item" == "phantora/" ]]; then
+            # The /./ syntax tells rsync where the relative path starts on the remote string
+            rsync -avz --progress --relative --exclude='target' "$REMOTE_USER_HOST:$SOURCE_DIR/./$item" "$LOCAL_BASE_DIR/"
+        else
+            rsync -avz --progress --relative "$REMOTE_USER_HOST:$SOURCE_DIR/./$item" "$LOCAL_BASE_DIR/"
+        fi
     done
     
     echo "-----------------------------------"

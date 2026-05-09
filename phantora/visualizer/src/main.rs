@@ -263,7 +263,7 @@ fn main() {
                     args,
                 }
             }
-            Action::Communication(flow, meta) => {
+            Action::Communication(flow, meta, nranks) => {
                 let stream = meta.get_cuda_stream().unwrap();
                 let name = meta.to_string();
                 let cat = "Communication".to_owned();
