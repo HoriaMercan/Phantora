@@ -160,12 +160,12 @@ impl EventQueue {
                 let mut est_duration_ns = 0;
 
                 let operation_and_size = match &meta {
-                    // CommMeta::NcclAllGather { count, dtype, .. } =>
-                    //     Some(("nccl", "all_gather", *count * dtype.size())),
-                    // CommMeta::NcclAllReduce { count, dtype, .. } =>
-                    //     Some(("nccl", "all_reduce", *count * dtype.size())),
-                    // CommMeta::NcclReduceScatter { count, dtype, .. } =>
-                    //     Some(("nccl", "reduce_scatter", *count * dtype.size())),
+                    CommMeta::NcclAllGather { count, dtype, .. } =>
+                        Some(("nccl", "allreduce", *count * dtype.size())),
+                    CommMeta::NcclAllReduce { count, dtype, .. } =>
+                        Some(("nccl", "allreduce", *count * dtype.size())),
+                    CommMeta::NcclReduceScatter { count, dtype, .. } =>
+                        Some(("nccl", "reduce_scatter", *count * dtype.size())),
                     CommMeta::NcclBcast { count, dtype, .. } =>
                         Some(("nccl", "bcast", *count * dtype.size())),
                     _ => None
